@@ -16,34 +16,65 @@ MODELS = [
 
 BEST_MODEL = "DeepSeek-V3-0324"
 
+BASE_URL = 'https://asmodeus.free.nf/deepseek.php'
+TIMEOUT = 25
+
+USER_AGENTS = [
+    'Mozilla/5.0 (Android 12; Mobile; rv:97.0) Gecko/97.0 Firefox/97.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+]
+
 sessions = {}
 
 
-def create_ai_session():
+def create_ai_session(ua_index=0):
     s = requests.Session()
     s.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Android 12; Mobile; rv:97.0) Gecko/97.0 Firefox/97.0'
+        'User-Agent': USER_AGENTS[ua_index % len(USER_AGENTS)],
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': BASE_URL,
     })
-    s.get('https://asmodeus.free.nf/deepseek.php', params={'i': '1'})
+    s.get(BASE_URL, params={'i': '1'}, timeout=TIMEOUT)
     return s
 
 
 def parse_response(html_text):
-    match = re.search(r'class="response-content">\s*(.*?)\s*</div>', html_text, re.DOTALL)
-    if match:
-        raw = match.group(1).strip()
-        return html_lib.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
-    return 'No response received'
+    patterns = [
+        r'class="response-content">\s*(.*?)\s*</div>',
+        r'class=\'response-content\'>\s*(.*?)\s*</div>',
+        r'response-content[^>]*>\s*(.*?)\s*</div>',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text, re.DOTALL)
+        if match:
+            raw = match.group(1).strip()
+            if raw:
+                return html_lib.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
+    return None
 
 
 def ask_once(message, model=BEST_MODEL):
-    s = create_ai_session()
-    r = s.post(
-        'https://asmodeus.free.nf/deepseek.php',
-        params={'i': '1'},
-        data={'model': model, 'question': message}
-    )
-    return parse_response(r.text)
+    last_error = None
+    for attempt in range(len(USER_AGENTS)):
+        try:
+            s = create_ai_session(ua_index=attempt)
+            r = s.post(
+                BASE_URL,
+                params={'i': '1'},
+                data={'model': model, 'question': message},
+                timeout=TIMEOUT
+            )
+            result = parse_response(r.text)
+            if result is not None:
+                return result, None
+            last_error = f"Response parsing failed (HTTP {r.status_code}). The upstream service may be blocking this server's IP."
+        except requests.exceptions.Timeout:
+            last_error = "Request timed out — the upstream service took too long to respond."
+        except requests.exceptions.RequestException as e:
+            last_error = f"Network error: {str(e)}"
+    return None, last_error
 
 
 @app.route('/input', methods=['GET'])
@@ -52,11 +83,40 @@ def quick_input():
     if not message:
         return jsonify({"error": "Provide a question using ?chat=your question"}), 400
     try:
-        answer = ask_once(message)
+        answer, error = ask_once(message)
+        if answer is not None:
+            return jsonify({
+                "model": BEST_MODEL,
+                "question": message,
+                "answer": answer
+            })
         return jsonify({
+            "error": error or "No response received from upstream service.",
             "model": BEST_MODEL,
-            "question": message,
-            "answer": answer
+            "question": message
+        }), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/debug', methods=['GET'])
+def debug_upstream():
+    message = request.args.get('chat', 'hello').strip()
+    try:
+        s = create_ai_session()
+        r = s.post(
+            BASE_URL,
+            params={'i': '1'},
+            data={'model': BEST_MODEL, 'question': message},
+            timeout=TIMEOUT
+        )
+        parsed = parse_response(r.text)
+        return jsonify({
+            "http_status": r.status_code,
+            "response_length": len(r.text),
+            "parsed_answer": parsed,
+            "raw_snippet": r.text[:500],
+            "has_response_content_class": 'response-content' in r.text,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -66,11 +126,12 @@ def quick_input():
 def index():
     return jsonify({
         "name": "DeepSeek AI API — Freight & Logistics",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "default_model": BEST_MODEL,
         "endpoints": {
             "GET /input?chat=...": "Quick one-shot question using DeepSeek-V3-0324",
             "GET /models": "List all available AI models",
+            "GET /debug?chat=...": "Debug upstream service response (use to diagnose Vercel issues)",
             "POST /init": "Initialize a chat session. Body: {\"model\": \"DeepSeek-V3-0324\"}",
             "POST /chat": "Send a message. Body: {\"session_id\": \"...\", \"message\": \"...\"}",
             "DELETE /session/<session_id>": "End a chat session"
@@ -117,7 +178,7 @@ def chat():
     if not message:
         return jsonify({"error": "message is required"}), 400
     if session_id not in sessions:
-        return jsonify({"error": "Session not found. Call POST /init first."}), 404
+        return jsonify({"error": "Session not found. Call POST /init first. Note: sessions are not persisted across serverless restarts."}), 404
 
     sess_data = sessions[session_id]
     s = sess_data['session']
@@ -126,11 +187,19 @@ def chat():
 
     try:
         r = s.post(
-            'https://asmodeus.free.nf/deepseek.php',
+            BASE_URL,
             params={'i': '1'},
-            data={'model': model, 'question': message}
+            data={'model': model, 'question': message},
+            timeout=TIMEOUT
         )
         response_text = parse_response(r.text)
+
+        if response_text is None:
+            return jsonify({
+                "error": "No response received from upstream service. The upstream service may be blocking this server's IP.",
+                "session_id": session_id,
+                "model": model,
+            }), 502
 
         return jsonify({
             "session_id": session_id,
@@ -139,6 +208,8 @@ def chat():
             "question": message,
             "answer": response_text
         })
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "Request timed out — the upstream service took too long to respond."}), 504
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
