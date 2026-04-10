@@ -22,16 +22,7 @@ def create_ai_session():
     s.headers.update({
         'User-Agent': 'Mozilla/5.0 (Android 12; Mobile; rv:97.0) Gecko/97.0 Firefox/97.0'
     })
-    r = s.get('https://asmodeus.free.nf/')
-    nums = re.findall(r'toNumbers\("([a-f0-9]+)"\)', r.text)
-    key, iv, data = [bytes.fromhex(n) for n in nums[:3]]
-    s.cookies.set(
-        '__test',
-        AES.new(key, AES.MODE_CBC, iv).decrypt(data).hex(),
-        domain='asmodeus.free.nf'
-    )
-    s.get('https://asmodeus.free.nf/index.php?i=1')
-    time.sleep(0.8)
+    s.get('https://asmodeus.free.nf/deepseek.php', params={'i': '1'})
     return s
 
 
@@ -102,7 +93,12 @@ def chat():
             data={'model': model, 'question': message}
         )
         reply = re.search(r'<div class="response-content">(.*?)</div>', r.text, re.DOTALL)
-        response_text = reply.group(1).strip() if reply else 'No response received'
+        if reply:
+            import html
+            raw = reply.group(1).strip()
+            response_text = html.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
+        else:
+            response_text = 'No response received'
 
         return jsonify({
             "session_id": session_id,
