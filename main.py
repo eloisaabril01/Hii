@@ -26,7 +26,7 @@ def create_ai_session():
     return s
 
 
-BEST_MODEL = "DeepSeek-R1"
+BEST_MODEL = "DeepSeek-V3-0324"
 
 
 def ask_once(message, model=BEST_MODEL):
