@@ -26,12 +26,47 @@ def create_ai_session():
     return s
 
 
+BEST_MODEL = "DeepSeek-R1"
+
+
+def ask_once(message, model=BEST_MODEL):
+    import html as html_lib
+    s = create_ai_session()
+    r = s.post(
+        'https://asmodeus.free.nf/deepseek.php',
+        params={'i': '1'},
+        data={'model': model, 'question': message}
+    )
+    reply = re.search(r'<div class="response-content">(.*?)</div>', r.text, re.DOTALL)
+    if reply:
+        raw = reply.group(1).strip()
+        return html_lib.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
+    return 'No response received'
+
+
+@app.route('/input', methods=['GET'])
+def quick_input():
+    message = request.args.get('chat', '').strip()
+    if not message:
+        return jsonify({"error": "Provide a question using ?chat=your question"}), 400
+    try:
+        answer = ask_once(message)
+        return jsonify({
+            "model": BEST_MODEL,
+            "question": message,
+            "answer": answer
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
         "name": "DeepSeek AI API",
         "version": "1.0.0",
         "endpoints": {
+            "GET /input?chat=...": "Quick one-shot question using DeepSeek-R1 (best model)",
             "GET /models": "List all available AI models",
             "POST /init": "Initialize a chat session. Body: {\"model\": \"DeepSeek-V3\"}",
             "POST /chat": "Send a message. Body: {\"session_id\": \"...\", \"message\": \"...\"}",
