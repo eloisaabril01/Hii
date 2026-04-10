@@ -1,4 +1,5 @@
 import re
+import html as html_lib
 import time
 import requests
 from flask import Flask, jsonify, request
@@ -13,6 +14,8 @@ MODELS = [
     "DeepSeek-Coder", "DeepSeek-Coder-V2", "DeepSeek-Coder-6.7B-base", "DeepSeek-Coder-6.7B-instruct"
 ]
 
+BEST_MODEL = "DeepSeek-V3-0324"
+
 sessions = {}
 
 
@@ -25,22 +28,22 @@ def create_ai_session():
     return s
 
 
-BEST_MODEL = "DeepSeek-V3-0324"
+def parse_response(html_text):
+    match = re.search(r'class="response-content">\s*(.*?)\s*</div>', html_text, re.DOTALL)
+    if match:
+        raw = match.group(1).strip()
+        return html_lib.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
+    return 'No response received'
 
 
 def ask_once(message, model=BEST_MODEL):
-    import html as html_lib
     s = create_ai_session()
     r = s.post(
         'https://asmodeus.free.nf/deepseek.php',
         params={'i': '1'},
         data={'model': model, 'question': message}
     )
-    reply = re.search(r'<div class="response-content">(.*?)</div>', r.text, re.DOTALL)
-    if reply:
-        raw = reply.group(1).strip()
-        return html_lib.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
-    return 'No response received'
+    return parse_response(r.text)
 
 
 @app.route('/input', methods=['GET'])
@@ -62,12 +65,13 @@ def quick_input():
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
-        "name": "DeepSeek AI API",
+        "name": "DeepSeek AI API — Freight & Logistics",
         "version": "1.0.0",
+        "default_model": BEST_MODEL,
         "endpoints": {
-            "GET /input?chat=...": "Quick one-shot question using DeepSeek-R1 (best model)",
+            "GET /input?chat=...": "Quick one-shot question using DeepSeek-V3-0324",
             "GET /models": "List all available AI models",
-            "POST /init": "Initialize a chat session. Body: {\"model\": \"DeepSeek-V3\"}",
+            "POST /init": "Initialize a chat session. Body: {\"model\": \"DeepSeek-V3-0324\"}",
             "POST /chat": "Send a message. Body: {\"session_id\": \"...\", \"message\": \"...\"}",
             "DELETE /session/<session_id>": "End a chat session"
         }
@@ -84,7 +88,7 @@ def get_models():
 @app.route('/init', methods=['POST'])
 def init_session():
     body = request.get_json(silent=True) or {}
-    model = body.get('model', 'DeepSeek-V3')
+    model = body.get('model', BEST_MODEL)
 
     if model not in MODELS:
         return jsonify({"error": f"Invalid model. Choose from: {MODELS}"}), 400
@@ -126,13 +130,7 @@ def chat():
             params={'i': '1'},
             data={'model': model, 'question': message}
         )
-        reply = re.search(r'<div class="response-content">(.*?)</div>', r.text, re.DOTALL)
-        if reply:
-            import html
-            raw = reply.group(1).strip()
-            response_text = html.unescape(raw).replace('<br />', '\n').replace('<br>', '\n')
-        else:
-            response_text = 'No response received'
+        response_text = parse_response(r.text)
 
         return jsonify({
             "session_id": session_id,
